@@ -8,8 +8,26 @@ type LinkItem = {
   id: string
   code: string
   description: string | null
-  whatsapp_number?: string
+  whatsapp_number?: string | null
+  original_url?: string | null
+  daily_limit?: number | null
+  total_limit?: number | null
   created_at: string
+}
+
+const DEFAULT_DAILY_LIMIT = 30
+const DEFAULT_TOTAL_LIMIT = 0
+
+// 从 WhatsApp 链接中提取纯号码
+function extractNumber(url: string): string {
+  return url.replace(/[^0-9]/g, '')
+}
+
+// 取号码后 8 位用于列表展示
+function tailNumber(value: string | null | undefined): string {
+  const digits = extractNumber(String(value ?? ''))
+  if (!digits) return '—'
+  return digits.length > 8 ? `…${digits.slice(-8)}` : digits
 }
 
 // 固定格式的时间字符串：YYYY-MM-DD HH:mm:ss
@@ -26,31 +44,34 @@ export default function LinksPage() {
   const [loading, setLoading] = useState(true)
   const [copiedCode, setCopiedCode] = useState<string | null>(null)
 
-  // 仅在客户端挂载后才渲染时间，避免 SSR 与客户端时间不一致
-  const [mounted, setMounted] = useState(false)
-
   const [isModalOpen, setIsModalOpen] = useState(false)
   const [editingId, setEditingId] = useState<string | null>(null)
+  const [name, setName] = useState('')
+  const [originalUrl, setOriginalUrl] = useState('')
+  const [dailyLimit, setDailyLimit] = useState(DEFAULT_DAILY_LIMIT)
+  const [totalLimit, setTotalLimit] = useState(DEFAULT_TOTAL_LIMIT)
   const [description, setDescription] = useState('')
-  const [code, setCode] = useState('')
   const [saving, setSaving] = useState(false)
+  const [toast, setToast] = useState<string | null>(null)
 
   // 删除确认弹窗：保存待删除的记录，null 表示未打开
   const [deletingLink, setDeletingLink] = useState<LinkItem | null>(null)
   const [deleting, setDeleting] = useState(false)
 
-  // 查询所有总链接
+  // 查询所有子链接
   const loadLinks = useCallback(async () => {
     setLoading(true)
     const supabase = createClient()
 
     const { data, error } = await supabase
       .from('links')
-      .select('id, code, description, created_at')
+      .select(
+        'id, code, description, whatsapp_number, original_url, daily_limit, total_limit, created_at',
+      )
       .order('created_at', { ascending: false })
 
     if (error) {
-      console.log('查询短链接列表失败：', error)
+      console.log('查询子链接列表失败：', error)
       setLinks([])
     } else {
       setLinks(data ?? [])
@@ -60,7 +81,6 @@ export default function LinksPage() {
   }, [])
 
   useEffect(() => {
-    setMounted(true)
     loadLinks()
   }, [loadLinks])
 
@@ -75,17 +95,32 @@ export default function LinksPage() {
     }
   }
 
+  const showToast = useCallback((message: string) => {
+    setToast(message)
+    setTimeout(() => setToast(null), 4000)
+  }, [])
+
   function openModal() {
     setEditingId(null)
+    setName('')
+    setOriginalUrl('')
+    setDailyLimit(DEFAULT_DAILY_LIMIT)
+    setTotalLimit(DEFAULT_TOTAL_LIMIT)
     setDescription('')
-    setCode('')
     setIsModalOpen(true)
   }
 
   function openEditModal(link: LinkItem) {
     setEditingId(link.id)
+    setName(link.description ?? '')
+    setOriginalUrl(link.original_url ?? '')
+    setDailyLimit(
+      typeof link.daily_limit === 'number' ? link.daily_limit : DEFAULT_DAILY_LIMIT,
+    )
+    setTotalLimit(
+      typeof link.total_limit === 'number' ? link.total_limit : DEFAULT_TOTAL_LIMIT,
+    )
     setDescription(link.description ?? '')
-    setCode(link.code)
     setIsModalOpen(true)
   }
 
@@ -132,30 +167,62 @@ export default function LinksPage() {
   async function handleSave(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
 
-    const trimmedCode = code.trim()
+    const trimmedName = name.trim()
+    const trimmedUrl = originalUrl.trim()
     const trimmedDescription = description.trim()
+    const number = extractNumber(trimmedUrl)
+    const finalDailyLimit =
+      Number.isFinite(dailyLimit) && dailyLimit > 0
+        ? Math.floor(dailyLimit)
+        : DEFAULT_DAILY_LIMIT
+    const finalTotalLimit =
+      Number.isFinite(totalLimit) && totalLimit > 0
+        ? Math.floor(totalLimit)
+        : DEFAULT_TOTAL_LIMIT
 
-    if (!trimmedCode) {
+    if (!trimmedName) {
+      showToast('请输入备注名')
+      return
+    }
+
+    if (!trimmedUrl) {
+      showToast('请输入 WhatsApp 链接')
+      return
+    }
+
+    if (!number) {
+      showToast('WhatsApp 链接中未找到有效号码')
       return
     }
 
     setSaving(true)
     const supabase = createClient()
 
+    // 备注名存 code，同时保留 whatsapp_number 便于分流
+    const payload = {
+      code: trimmedName,
+      description: trimmedDescription || null,
+      original_url: trimmedUrl,
+      whatsapp_number: number,
+      daily_limit: finalDailyLimit,
+      total_limit: finalTotalLimit,
+    }
+
+    const selectColumns =
+      'id, code, description, whatsapp_number, original_url, daily_limit, total_limit, created_at'
+
     if (editingId) {
       // 编辑模式：更新对应记录
       const { data, error } = await supabase
         .from('links')
-        .update({
-          code: trimmedCode,
-          description: trimmedDescription || null,
-        })
+        .update(payload)
         .eq('id', editingId)
-        .select('id, code, description, created_at')
+        .select(selectColumns)
         .single()
 
       if (error) {
-        console.log('更新短链接失败：', error)
+        console.log('更新子链接失败：', error)
+        showToast(`保存失败：${error.message}`)
         setSaving(false)
         return
       }
@@ -167,15 +234,13 @@ export default function LinksPage() {
       // 新建模式：写入数据库
       const { data, error } = await supabase
         .from('links')
-        .insert({
-          code: trimmedCode,
-          description: trimmedDescription || null,
-        })
-        .select('id, code, description, created_at')
+        .insert(payload)
+        .select(selectColumns)
         .single()
 
       if (error) {
-        console.log('创建短链接失败：', error)
+        console.log('创建子链接失败：', error)
+        showToast(`保存失败：${error.message}`)
         setSaving(false)
         return
       }
@@ -191,15 +256,17 @@ export default function LinksPage() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight">短链接</h1>
-          <p className="text-sm text-neutral-600">管理你的短链接</p>
+          <h1 className="text-2xl font-semibold tracking-tight">子链接</h1>
+          <p className="text-sm text-neutral-600">
+            管理你的子链接（WhatsApp 号码与分流上限）
+          </p>
         </div>
         <button
           type="button"
           onClick={openModal}
           className="rounded-md bg-black px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-neutral-800"
         >
-          创建短链接
+          创建子链接
         </button>
       </div>
 
@@ -208,13 +275,19 @@ export default function LinksPage() {
           <thead className="bg-neutral-50">
             <tr>
               <th className="border-b border-neutral-200 px-4 py-3 font-medium text-neutral-700">
-                短链接名字
+                备注名
               </th>
               <th className="border-b border-neutral-200 px-4 py-3 font-medium text-neutral-700">
-                描述
+                WhatsApp 链接
               </th>
               <th className="border-b border-neutral-200 px-4 py-3 font-medium text-neutral-700">
-                创建时间
+                每日上限
+              </th>
+              <th className="border-b border-neutral-200 px-4 py-3 font-medium text-neutral-700">
+                累计上限
+              </th>
+              <th className="border-b border-neutral-200 px-4 py-3 font-medium text-neutral-700">
+                状态
               </th>
               <th className="border-b border-neutral-200 px-4 py-3 font-medium text-neutral-700">
                 操作
@@ -222,57 +295,78 @@ export default function LinksPage() {
             </tr>
           </thead>
           <tbody>
-            {links.map((link) => (
-              <tr key={link.id} className="hover:bg-neutral-50">
-                <td className="border-b border-neutral-200 px-4 py-3 font-mono text-black">
-                  <Link
-                    href={`/links/${link.code}`}
-                    className="text-black underline-offset-4 transition-colors hover:text-blue-600 hover:underline"
+            {links.map((link) => {
+              const daily = link.daily_limit ?? DEFAULT_DAILY_LIMIT
+              const total = link.total_limit ?? DEFAULT_TOTAL_LIMIT
+              const fullUrl =
+                link.original_url ||
+                (link.whatsapp_number
+                  ? `https://wa.me/${extractNumber(link.whatsapp_number)}`
+                  : '')
+
+              return (
+                <tr key={link.id} className="hover:bg-neutral-50">
+                  <td className="border-b border-neutral-200 px-4 py-3 font-medium text-black">
+                    <Link
+                      href={`/links/${link.code}`}
+                      className="text-black underline-offset-4 transition-colors hover:text-blue-600 hover:underline"
+                    >
+                      {link.description || link.code}
+                    </Link>
+                  </td>
+                  <td
+                    className="border-b border-neutral-200 px-4 py-3 font-mono text-neutral-700"
+                    title={fullUrl || undefined}
                   >
-                    {link.code}
-                  </Link>
-                </td>
-                <td className="border-b border-neutral-200 px-4 py-3 text-neutral-700">
-                  {link.description || '—'}
-                </td>
-                <td className="border-b border-neutral-200 px-4 py-3 text-neutral-600">
-                  {mounted ? formatDateTime(link.created_at) : '—'}
-                </td>
-                <td className="border-b border-neutral-200 px-4 py-3">
-                  <div className="flex items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={() => handleCopy(link.code)}
-                      className="w-20 rounded-md border border-neutral-300 px-2 py-1 text-center text-xs font-medium text-black transition-colors hover:bg-neutral-100"
-                    >
-                      {copiedCode === link.code ? '已复制' : '复制'}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => openEditModal(link)}
-                      className="rounded-md px-2 py-1 text-xs font-medium text-blue-600 transition-colors hover:bg-blue-50"
-                    >
-                      编辑
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => openDeleteModal(link)}
-                      className="rounded-md px-2 py-1 text-xs font-medium text-red-600 transition-colors hover:bg-red-50"
-                    >
-                      删除
-                    </button>
-                  </div>
-                </td>
-              </tr>
-            ))}
+                    {tailNumber(link.whatsapp_number || link.original_url)}
+                  </td>
+                  <td className="border-b border-neutral-200 px-4 py-3 text-neutral-700">
+                    {daily > 0 ? `${daily} 次/天` : '不限'}
+                  </td>
+                  <td className="border-b border-neutral-200 px-4 py-3 text-neutral-700">
+                    {total > 0 ? `${total} 次` : '不限'}
+                  </td>
+                  <td className="border-b border-neutral-200 px-4 py-3">
+                    <span className="inline-flex items-center rounded-full bg-green-50 px-2 py-0.5 text-xs font-medium text-green-700">
+                      启用
+                    </span>
+                  </td>
+                  <td className="border-b border-neutral-200 px-4 py-3">
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => handleCopy(link.code)}
+                        className="w-20 rounded-md border border-neutral-300 px-2 py-1 text-center text-xs font-medium text-black transition-colors hover:bg-neutral-100"
+                      >
+                        {copiedCode === link.code ? '已复制' : '复制'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => openEditModal(link)}
+                        className="rounded-md px-2 py-1 text-xs font-medium text-blue-600 transition-colors hover:bg-blue-50"
+                      >
+                        编辑
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => openDeleteModal(link)}
+                        className="rounded-md px-2 py-1 text-xs font-medium text-red-600 transition-colors hover:bg-red-50"
+                      >
+                        删除
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              )
+            })}
 
             {!loading && links.length === 0 && (
               <tr>
                 <td
-                  colSpan={4}
+                  colSpan={6}
                   className="border-b border-neutral-200 px-4 py-8 text-center text-sm text-neutral-500"
                 >
-                  暂无短链接，点击右上角「创建短链接」开始。
+                  暂无子链接，点击右上角「创建子链接」开始。
                 </td>
               </tr>
             )}
@@ -280,7 +374,7 @@ export default function LinksPage() {
             {loading && (
               <tr>
                 <td
-                  colSpan={4}
+                  colSpan={6}
                   className="border-b border-neutral-200 px-4 py-8 text-center text-sm text-neutral-500"
                 >
                   加载中...
@@ -301,34 +395,99 @@ export default function LinksPage() {
             onClick={(event) => event.stopPropagation()}
           >
             <h2 className="text-lg font-semibold tracking-tight">
-              {editingId ? '编辑短链接' : '创建短链接'}
+              {editingId ? '编辑子链接' : '创建子链接'}
             </h2>
             <p className="mt-1 text-sm text-neutral-600">
               {editingId
-                ? '修改短链接名字与描述'
-                : '填写短链接名字，可选描述'}
+                ? '修改备注名、WhatsApp 链接与分流上限'
+                : '填写备注名与 WhatsApp 链接，设置分流上限'}
             </p>
 
             <form onSubmit={handleSave} className="mt-4 space-y-4">
               <div className="space-y-1">
                 <label
-                  htmlFor="code"
+                  htmlFor="name"
                   className="block text-sm font-medium text-black"
                 >
-                  短链接名字
+                  备注名 <span className="text-red-500">*</span>
                 </label>
                 <input
-                  id="code"
+                  id="name"
                   type="text"
                   required
-                  value={code}
-                  onChange={(event) => setCode(event.target.value)}
+                  value={name}
+                  onChange={(event) => setName(event.target.value)}
                   className="w-full rounded-md border border-neutral-300 px-3 py-2 text-sm text-black outline-none focus:border-black"
-                  placeholder="demo1"
+                  placeholder="如：美国1号"
                 />
-                <p className="text-xs text-neutral-500">
-                  建议使用英文或数字，将作为短链接路径
-                </p>
+              </div>
+
+              <div className="space-y-1">
+                <label
+                  htmlFor="originalUrl"
+                  className="block text-sm font-medium text-black"
+                >
+                  WhatsApp 链接 <span className="text-red-500">*</span>
+                </label>
+                <input
+                  id="originalUrl"
+                  type="text"
+                  required
+                  value={originalUrl}
+                  onChange={(event) => setOriginalUrl(event.target.value)}
+                  className="w-full rounded-md border border-neutral-300 px-3 py-2 text-sm text-black outline-none focus:border-black"
+                  placeholder="https://wa.me/..."
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <label
+                    htmlFor="dailyLimit"
+                    className="block text-sm font-medium text-black"
+                  >
+                    每日上限
+                  </label>
+                  <div className="flex items-center gap-2">
+                    <input
+                      id="dailyLimit"
+                      type="number"
+                      min={0}
+                      value={dailyLimit}
+                      onChange={(event) =>
+                        setDailyLimit(Number(event.target.value))
+                      }
+                      className="w-full rounded-md border border-neutral-300 px-3 py-2 text-sm text-black outline-none focus:border-black"
+                      placeholder="30"
+                    />
+                    <span className="shrink-0 text-xs text-neutral-500">
+                      次/天
+                    </span>
+                  </div>
+                </div>
+
+                <div className="space-y-1">
+                  <label
+                    htmlFor="totalLimit"
+                    className="block text-sm font-medium text-black"
+                  >
+                    累计上限
+                  </label>
+                  <div className="flex items-center gap-2">
+                    <input
+                      id="totalLimit"
+                      type="number"
+                      min={0}
+                      value={totalLimit}
+                      onChange={(event) =>
+                        setTotalLimit(Number(event.target.value))
+                      }
+                      className="w-full rounded-md border border-neutral-300 px-3 py-2 text-sm text-black outline-none focus:border-black"
+                      placeholder="0"
+                    />
+                    <span className="shrink-0 text-xs text-neutral-500">次</span>
+                  </div>
+                </div>
               </div>
 
               <div className="space-y-1">
@@ -346,6 +505,9 @@ export default function LinksPage() {
                   className="min-h-[80px] w-full resize-y rounded-md border border-neutral-300 px-3 py-2 text-sm text-black outline-none focus:border-black"
                   placeholder="美国销售团队"
                 />
+                <p className="text-xs text-neutral-500">
+                  每日上限 / 累计上限 填 0 表示不限；默认为每日 30 次。
+                </p>
               </div>
 
               <div className="flex justify-end gap-2 pt-2">
@@ -385,9 +547,9 @@ export default function LinksPage() {
 
             <div className="mt-4 space-y-2 rounded-md border border-neutral-200 bg-neutral-50 p-4">
               <div className="flex items-center justify-between gap-4">
-                <span className="text-xs text-neutral-500">短链接名字</span>
+                <span className="text-xs text-neutral-500">备注名</span>
                 <span className="font-mono text-sm text-black">
-                  {deletingLink.code}
+                  {deletingLink.description || deletingLink.code}
                 </span>
               </div>
               <div className="flex items-center justify-between gap-4">
@@ -416,6 +578,12 @@ export default function LinksPage() {
               </button>
             </div>
           </div>
+        </div>
+      )}
+
+      {toast && (
+        <div className="fixed bottom-6 left-1/2 z-[60] -translate-x-1/2 rounded-md bg-black px-4 py-2 text-sm font-medium text-white shadow-lg">
+          {toast}
         </div>
       )}
     </div>

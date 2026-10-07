@@ -32,6 +32,9 @@ create table if not exists public.links (
   target_url text,
   whatsapp_number text,
   description text,
+  original_url text,
+  daily_limit integer not null default 30,
+  total_limit integer not null default 0,
   created_at timestamptz not null default now()
 );
 
@@ -41,6 +44,9 @@ alter table public.links alter column user_id drop not null;
 alter table public.links alter column target_url drop not null;
 alter table public.links add column if not exists whatsapp_number text;
 alter table public.links add column if not exists description text;
+alter table public.links add column if not exists original_url text;
+alter table public.links add column if not exists daily_limit integer not null default 30;
+alter table public.links add column if not exists total_limit integer not null default 0;
 
 create index if not exists links_user_id_idx on public.links (user_id);
 create index if not exists links_code_idx on public.links (code);
