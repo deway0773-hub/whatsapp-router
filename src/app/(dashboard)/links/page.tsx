@@ -22,6 +22,16 @@ function extractNumber(url: string): string {
   return url.replace(/[^0-9]/g, '')
 }
 
+// 生成随机短链接代码（小写字母 + 数字，8 位）
+function generateCode(length = 8): string {
+  const chars = 'abcdefghijklmnopqrstuvwxyz0123456789'
+  let result = ''
+  for (let i = 0; i < length; i += 1) {
+    result += chars[Math.floor(Math.random() * chars.length)]
+  }
+  return result
+}
+
 // 取号码后 8 位用于列表展示
 function tailNumber(value: string | null | undefined): string {
   const digits = extractNumber(String(value ?? ''))
@@ -48,7 +58,6 @@ export default function LinksPage() {
   const [name, setName] = useState('')
   const [originalUrl, setOriginalUrl] = useState('')
   const [dailyLimit, setDailyLimit] = useState(DEFAULT_DAILY_LIMIT)
-  const [description, setDescription] = useState('')
   const [saving, setSaving] = useState(false)
   const [toast, setToast] = useState<string | null>(null)
 
@@ -103,7 +112,6 @@ export default function LinksPage() {
     setName('')
     setOriginalUrl('')
     setDailyLimit(DEFAULT_DAILY_LIMIT)
-    setDescription('')
     setIsModalOpen(true)
   }
 
@@ -114,9 +122,10 @@ export default function LinksPage() {
     setDailyLimit(
       typeof link.daily_limit === 'number' ? link.daily_limit : DEFAULT_DAILY_LIMIT,
     )
-    setDescription(link.description ?? '')
     setIsModalOpen(true)
   }
+
+  // 备注名统一存 description，code 仅作为短链接代码
 
   function closeModal() {
     setIsModalOpen(false)
@@ -163,7 +172,6 @@ export default function LinksPage() {
 
     const trimmedName = name.trim()
     const trimmedUrl = originalUrl.trim()
-    const trimmedDescription = description.trim()
     const number = extractNumber(trimmedUrl)
     const finalDailyLimit =
       Number.isFinite(dailyLimit) && dailyLimit > 0
@@ -188,10 +196,9 @@ export default function LinksPage() {
     setSaving(true)
     const supabase = createClient()
 
-    // 备注名存 code，同时保留 whatsapp_number 便于分流
+    // 备注名存 description；code 仅作为短链接代码，编辑时保持不变
     const payload = {
-      code: trimmedName,
-      description: trimmedDescription || null,
+      description: trimmedName,
       original_url: trimmedUrl,
       whatsapp_number: number,
       daily_limit: finalDailyLimit,
@@ -201,7 +208,7 @@ export default function LinksPage() {
       'id, code, description, whatsapp_number, original_url, daily_limit, total_limit, created_at'
 
     if (editingId) {
-      // 编辑模式：更新对应记录
+      // 编辑模式：更新对应记录（不改 code）
       const { data, error } = await supabase
         .from('links')
         .update(payload)
@@ -220,10 +227,10 @@ export default function LinksPage() {
         prev.map((item) => (item.id === editingId ? data : item)),
       )
     } else {
-      // 新建模式：写入数据库
+      // 新建模式：自动生成随机短码后写入数据库
       const { data, error } = await supabase
         .from('links')
-        .insert(payload)
+        .insert({ ...payload, code: generateCode() })
         .select(selectColumns)
         .single()
 
@@ -439,23 +446,6 @@ export default function LinksPage() {
                   }
                   className="w-full rounded-md border border-neutral-300 px-3 py-2 text-sm text-black outline-none focus:border-black"
                   placeholder="默认30，填0表示不限"
-                />
-              </div>
-
-              <div className="space-y-1">
-                <label
-                  htmlFor="description"
-                  className="block text-sm font-medium text-black"
-                >
-                  描述/备注（可选）
-                </label>
-                <textarea
-                  id="description"
-                  rows={3}
-                  value={description}
-                  onChange={(event) => setDescription(event.target.value)}
-                  className="min-h-[80px] w-full resize-y rounded-md border border-neutral-300 px-3 py-2 text-sm text-black outline-none focus:border-black"
-                  placeholder="美国销售团队"
                 />
                 <p className="text-xs text-neutral-500">
                   每日上限填 0 表示不限，默认为每日 30 次。

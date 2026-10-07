@@ -1,6 +1,5 @@
 import type { ReactNode } from 'react'
 import Link from 'next/link'
-import { LinksProvider } from '@/context/links-context'
 
 const navItems = [
   { label: '仪表盘', href: '/dashboard' },
@@ -16,8 +15,7 @@ export default function DashboardLayout({
   children: ReactNode
 }>) {
   return (
-    <LinksProvider>
-      <div className="flex min-h-screen bg-white text-black">
+    <div className="flex min-h-screen bg-white text-black">
       <aside className="hidden w-64 shrink-0 border-r border-neutral-200 md:flex md:flex-col">
         <div className="flex h-16 flex-col justify-center border-b border-neutral-200 px-6">
           <span className="text-sm font-semibold tracking-tight">
@@ -46,7 +44,6 @@ export default function DashboardLayout({
         </header>
         <main className="flex-1 p-6">{children}</main>
       </div>
-      </div>
-    </LinksProvider>
+    </div>
   )
 }
