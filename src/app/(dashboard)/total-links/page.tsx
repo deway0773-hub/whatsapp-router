@@ -447,9 +447,6 @@ export default function TotalLinksPage() {
                   className="w-full rounded-md border border-neutral-300 px-3 py-2 text-sm text-black outline-none focus:border-blue-500"
                   placeholder="例如：啊买家具"
                 />
-                <p className="text-xs text-neutral-500">
-                  给自己看的，支持中文
-                </p>
               </div>
 
               {/* 短链后缀（给客户看的） */}
@@ -469,11 +466,8 @@ export default function TotalLinksPage() {
                     setCode(event.target.value.replace(/[^a-zA-Z0-9-]/g, ''))
                   }
                   className="w-full rounded-md border border-neutral-300 px-3 py-2 text-sm text-black outline-none focus:border-blue-500"
-                  placeholder="amujiaju"
+                  placeholder="例如：amujiaju"
                 />
-                <p className="text-xs text-neutral-500">
-                  给客户看的，只能英文、数字和中划线，会作为 /t/xxx 路径
-                </p>
               </div>
 
               {/* 短链域名 */}
