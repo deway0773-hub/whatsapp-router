@@ -81,6 +81,7 @@ create index if not exists routing_rules_link_id_idx on public.routing_rules (li
 create table if not exists public.total_links (
   id uuid primary key default gen_random_uuid(),
   code text not null unique,
+  display_name text, -- 总链接名称（给自己看的，支持中文）
   description text,
   domain text, -- 短链域名，例如 5r8.cn / y41.cn
   switch_mode text not null default 'random', -- 子链接切换方式：random / sequential / round_robin
@@ -89,6 +90,7 @@ create table if not exists public.total_links (
 );
 
 -- 兼容已存在的旧表：补齐新字段
+alter table public.total_links add column if not exists display_name text;
 alter table public.total_links add column if not exists domain text;
 alter table public.total_links add column if not exists switch_mode text not null default 'random';
 alter table public.total_links add column if not exists limit_type text not null default 'total';

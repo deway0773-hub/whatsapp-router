@@ -7,6 +7,7 @@ import { createClient } from '@/lib/supabase/client'
 type TotalLinkItem = {
   id: string
   code: string
+  display_name: string | null
   description: string | null
   domain: string | null
   switch_mode: string | null
@@ -51,6 +52,9 @@ export default function TotalLinksPage() {
 
   const [isModalOpen, setIsModalOpen] = useState(false)
   const [editingId, setEditingId] = useState<string | null>(null)
+  // 总链接名称（给自己看的，支持中文）
+  const [displayName, setDisplayName] = useState('')
+  // 短链后缀（给客户看的，只能英文数字，作为 /t/xxx 路径）
   const [code, setCode] = useState('')
   const [domain, setDomain] = useState(DOMAIN_OPTIONS[0])
   const [switchMode, setSwitchMode] = useState<SwitchMode>('random')
@@ -80,7 +84,7 @@ export default function TotalLinksPage() {
       // 加超时保护：若 RLS 未放开导致请求挂起，避免页面一直卡在“加载中...”
       const query = supabase
         .from('total_links')
-        .select('id, code, description, domain, switch_mode, limit_type, created_at')
+        .select('id, code, display_name, description, domain, switch_mode, limit_type, created_at')
         .order('created_at', { ascending: false })
 
       const timeout = new Promise<never>((_, reject) =>
@@ -121,6 +125,7 @@ export default function TotalLinksPage() {
 
   function openModal() {
     setEditingId(null)
+    setDisplayName('')
     setCode('')
     setDomain(DOMAIN_OPTIONS[0])
     setSwitchMode('random')
@@ -131,6 +136,7 @@ export default function TotalLinksPage() {
 
   function openEditModal(link: TotalLinkItem) {
     setEditingId(link.id)
+    setDisplayName(link.display_name ?? '')
     setCode(link.code)
     setDomain(link.domain || DOMAIN_OPTIONS[0])
     setSwitchMode((link.switch_mode as SwitchMode) || 'random')
@@ -197,11 +203,22 @@ export default function TotalLinksPage() {
   async function handleSave(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
 
-    const trimmedCode = code.trim()
+    const trimmedName = displayName.trim()
+    const trimmedCode = code.trim().toLowerCase()
     const validSubLinks = subLinks.map((item) => item.trim()).filter(Boolean)
 
-    if (!trimmedCode) {
+    if (!trimmedName) {
       showToast('请输入总链接名称')
+      return
+    }
+
+    if (!trimmedCode) {
+      showToast('请输入短链后缀')
+      return
+    }
+
+    if (!/^[a-z0-9-]+$/.test(trimmedCode)) {
+      showToast('短链后缀只能包含英文、数字和中划线')
       return
     }
 
@@ -225,7 +242,8 @@ export default function TotalLinksPage() {
       }
     } catch (err) {
       console.log('Supabase 连接检查失败：', err)
-      showToast('请先去 Supabase 后台 Restore 项目')
+      const message = err instanceof Error ? err.message : String(err)
+      showToast(`保存失败：${message}`)
       setSaving(false)
       return
     }
@@ -236,17 +254,18 @@ export default function TotalLinksPage() {
         .from('total_links')
         .update({
           code: trimmedCode,
+          display_name: trimmedName,
           domain,
           switch_mode: switchMode,
           limit_type: limitType,
         })
         .eq('id', editingId)
-        .select('id, code, description, domain, switch_mode, limit_type, created_at')
+        .select('id, code, display_name, description, domain, switch_mode, limit_type, created_at')
         .single()
 
       if (error) {
         console.log('更新总链接失败：', error)
-        showToast('保存失败，请检查 Supabase 连接')
+        showToast(`保存失败：${error.message}`)
         setSaving(false)
         return
       }
@@ -260,16 +279,17 @@ export default function TotalLinksPage() {
         .from('total_links')
         .insert({
           code: trimmedCode,
+          display_name: trimmedName,
           domain,
           switch_mode: switchMode,
           limit_type: limitType,
         })
-        .select('id, code, description, domain, switch_mode, limit_type, created_at')
+        .select('id, code, display_name, description, domain, switch_mode, limit_type, created_at')
         .single()
 
       if (error) {
         console.log('创建总链接失败：', error)
-        showToast('创建失败，请检查 Supabase 连接')
+        showToast(`创建失败：${error.message}`)
         setSaving(false)
         return
       }
@@ -304,7 +324,7 @@ export default function TotalLinksPage() {
           <thead className="bg-neutral-50">
             <tr>
               <th className="border-b border-neutral-200 px-4 py-3 font-medium text-neutral-700">
-                总链接名字
+                总链接名称
               </th>
               <th className="border-b border-neutral-200 px-4 py-3 font-medium text-neutral-700">
                 短链域名
@@ -323,12 +343,12 @@ export default function TotalLinksPage() {
           <tbody>
             {links.map((link) => (
               <tr key={link.id} className="hover:bg-neutral-50">
-                <td className="border-b border-neutral-200 px-4 py-3 font-mono text-black">
+                <td className="border-b border-neutral-200 px-4 py-3 text-black">
                   <Link
                     href={`/total-links/${link.code}`}
                     className="text-black underline-offset-4 transition-colors hover:text-blue-600 hover:underline"
                   >
-                    {link.code}
+                    {link.display_name || link.code}
                   </Link>
                 </td>
                 <td className="border-b border-neutral-200 px-4 py-3 text-neutral-700">
@@ -406,29 +426,53 @@ export default function TotalLinksPage() {
               {editingId ? '编辑活链接' : '创建活链接'}
             </h2>
             <p className="mt-1 text-sm text-neutral-600">
-              配置总链接名称、短链域名与子链接
+              配置总链接名称、短链后缀、短链域名与子链接
             </p>
 
             <form onSubmit={handleSave} className="mt-5 space-y-5">
-              {/* 总链接名称 */}
+              {/* 总链接名称（给自己看的） */}
+              <div className="space-y-1">
+                <label
+                  htmlFor="displayName"
+                  className="block text-sm font-medium text-black"
+                >
+                  <span className="text-red-500">*</span> 总链接名称
+                </label>
+                <input
+                  id="displayName"
+                  type="text"
+                  required
+                  value={displayName}
+                  onChange={(event) => setDisplayName(event.target.value)}
+                  className="w-full rounded-md border border-neutral-300 px-3 py-2 text-sm text-black outline-none focus:border-blue-500"
+                  placeholder="例如：啊买家具"
+                />
+                <p className="text-xs text-neutral-500">
+                  给自己看的，支持中文
+                </p>
+              </div>
+
+              {/* 短链后缀（给客户看的） */}
               <div className="space-y-1">
                 <label
                   htmlFor="code"
                   className="block text-sm font-medium text-black"
                 >
-                  <span className="text-red-500">*</span> 总链接名称
+                  <span className="text-red-500">*</span> 短链后缀
                 </label>
                 <input
                   id="code"
                   type="text"
                   required
                   value={code}
-                  onChange={(event) => setCode(event.target.value)}
+                  onChange={(event) =>
+                    setCode(event.target.value.replace(/[^a-zA-Z0-9-]/g, ''))
+                  }
                   className="w-full rounded-md border border-neutral-300 px-3 py-2 text-sm text-black outline-none focus:border-blue-500"
-                  placeholder="请输入总链接名称，如 aaa"
+                  placeholder="amujiaju"
                 />
                 <p className="text-xs text-neutral-500">
-                  英文数字，会作为 /t/xxx 路径
+                  给客户看的，只能英文、数字和中划线，会作为 /t/xxx 路径
                 </p>
               </div>
 
@@ -590,7 +634,13 @@ export default function TotalLinksPage() {
 
             <div className="mt-4 space-y-2 rounded-md border border-neutral-200 bg-neutral-50 p-4">
               <div className="flex items-center justify-between gap-4">
-                <span className="text-xs text-neutral-500">总链接名字</span>
+                <span className="text-xs text-neutral-500">总链接名称</span>
+                <span className="text-sm text-black">
+                  {deletingLink.display_name || '—'}
+                </span>
+              </div>
+              <div className="flex items-center justify-between gap-4">
+                <span className="text-xs text-neutral-500">短链后缀</span>
                 <span className="font-mono text-sm text-black">
                   {deletingLink.code}
                 </span>
