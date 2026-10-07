@@ -11,14 +11,17 @@ type TotalLinkItem = {
   description: string | null
   domain: string | null
   switch_mode: string | null
-  limit_type: string | null
   created_at: string
 }
 
+// 子链接：url + 每日上限 + 累计上限（0 = 不限）
+type SubLink = { url: string; dailyLimit: number; totalLimit: number }
+
+const DEFAULT_DAILY_LIMIT = 30
+const DEFAULT_TOTAL_LIMIT = 0
+
 // 子链接切换方式
  type SwitchMode = 'random' | 'sequential' | 'round_robin'
-// 上限方式
-type LimitType = 'total' | 'daily'
 
 const DOMAIN_OPTIONS = ['5r8.cn', 'y41.cn']
 
@@ -26,11 +29,6 @@ const SWITCH_MODE_OPTIONS: { value: SwitchMode; label: string }[] = [
   { value: 'random', label: '随机切换' },
   { value: 'sequential', label: '顺序切换' },
   { value: 'round_robin', label: '轮训切换' },
-]
-
-const LIMIT_TYPE_OPTIONS: { value: LimitType; label: string }[] = [
-  { value: 'total', label: '累计上限' },
-  { value: 'daily', label: '每日上限' },
 ]
 
 // 固定格式的时间字符串：YYYY-MM-DD HH:mm:ss
@@ -58,9 +56,10 @@ export default function TotalLinksPage() {
   const [code, setCode] = useState('')
   const [domain, setDomain] = useState(DOMAIN_OPTIONS[0])
   const [switchMode, setSwitchMode] = useState<SwitchMode>('random')
-  const [limitType, setLimitType] = useState<LimitType>('total')
-  // 子链接列表：每行一个 WhatsApp 链接
-  const [subLinks, setSubLinks] = useState<string[]>([''])
+  // 子链接列表：每行一个 WhatsApp 链接 + 每日上限 + 累计上限
+  const [subLinks, setSubLinks] = useState<SubLink[]>([
+    { url: '', dailyLimit: DEFAULT_DAILY_LIMIT, totalLimit: DEFAULT_TOTAL_LIMIT },
+  ])
   const [saving, setSaving] = useState(false)
 
   // 轻量 toast 提示
@@ -84,7 +83,7 @@ export default function TotalLinksPage() {
       // 加超时保护：若 RLS 未放开导致请求挂起，避免页面一直卡在“加载中...”
       const query = supabase
         .from('total_links')
-        .select('id, code, display_name, description, domain, switch_mode, limit_type, created_at')
+        .select('id, code, display_name, description, domain, switch_mode, created_at')
         .order('created_at', { ascending: false })
 
       const timeout = new Promise<never>((_, reject) =>
@@ -129,8 +128,7 @@ export default function TotalLinksPage() {
     setCode('')
     setDomain(DOMAIN_OPTIONS[0])
     setSwitchMode('random')
-    setLimitType('total')
-    setSubLinks([''])
+    setSubLinks([{ url: '', dailyLimit: DEFAULT_DAILY_LIMIT, totalLimit: DEFAULT_TOTAL_LIMIT }])
     setIsModalOpen(true)
   }
 
@@ -140,8 +138,7 @@ export default function TotalLinksPage() {
     setCode(link.code)
     setDomain(link.domain || DOMAIN_OPTIONS[0])
     setSwitchMode((link.switch_mode as SwitchMode) || 'random')
-    setLimitType((link.limit_type as LimitType) || 'total')
-    setSubLinks([''])
+    setSubLinks([{ url: '', dailyLimit: DEFAULT_DAILY_LIMIT, totalLimit: DEFAULT_TOTAL_LIMIT }])
     setIsModalOpen(true)
   }
 
@@ -152,11 +149,36 @@ export default function TotalLinksPage() {
 
   // 子链接行操作
   function updateSubLink(index: number, value: string) {
-    setSubLinks((prev) => prev.map((item, i) => (i === index ? value : item)))
+    setSubLinks((prev) =>
+      prev.map((item, i) => (i === index ? { ...item, url: value } : item)),
+    )
+  }
+
+  function updateSubLinkDailyLimit(index: number, value: number) {
+    setSubLinks((prev) =>
+      prev.map((item, i) =>
+        i === index
+          ? { ...item, dailyLimit: Number.isNaN(value) ? DEFAULT_DAILY_LIMIT : value }
+          : item,
+      ),
+    )
+  }
+
+  function updateSubLinkTotalLimit(index: number, value: number) {
+    setSubLinks((prev) =>
+      prev.map((item, i) =>
+        i === index
+          ? { ...item, totalLimit: Number.isNaN(value) ? DEFAULT_TOTAL_LIMIT : value }
+          : item,
+      ),
+    )
   }
 
   function addSubLink() {
-    setSubLinks((prev) => [...prev, ''])
+    setSubLinks((prev) => [
+      ...prev,
+      { url: '', dailyLimit: DEFAULT_DAILY_LIMIT, totalLimit: DEFAULT_TOTAL_LIMIT },
+    ])
   }
 
   function removeSubLink(index: number) {
@@ -199,13 +221,149 @@ export default function TotalLinksPage() {
     setDeletingLink(null)
   }
 
+  // 从 WhatsApp 链接中提取纯号码
+  function extractNumber(url: string): string {
+    return url.replace(/[^0-9]/g, '')
+  }
+
+  // 同步子链接项：把弹窗里的 [{ url, dailyLimit, totalLimit }] 写入 total_link_items
+  // - 按号码匹配（或创建）对应的短链接 links 记录
+  // - 已存在的项更新上限，新项插入
+  async function syncSubLinkItems(
+    supabase: ReturnType<typeof createClient>,
+    totalLinkId: string,
+    items: { url: string; dailyLimit: number; totalLimit: number }[],
+  ): Promise<{ error: Error | null }> {
+    // 1) 读取现有子链接项
+    const { data: existing, error: existingError } = await supabase
+      .from('total_link_items')
+      .select('id, short_link_id')
+      .eq('total_link_id', totalLinkId)
+
+    if (existingError) {
+      return { error: new Error(existingError.message) }
+    }
+
+    // 2) 读取所有短链接，用于按号码匹配
+    const { data: allLinks, error: linksError } = await supabase
+      .from('links')
+      .select('id, code, whatsapp_number')
+
+    if (linksError) {
+      return { error: new Error(linksError.message) }
+    }
+
+    const linkByNumber = new Map<string, string>()
+    for (const row of allLinks ?? []) {
+      const number = extractNumber(String(row.whatsapp_number ?? ''))
+      if (number) {
+        linkByNumber.set(number, row.id)
+      }
+    }
+
+    const existingByShortId = new Map<string, string>()
+    for (const row of existing ?? []) {
+      existingByShortId.set(row.short_link_id, row.id)
+    }
+
+    const keptItemIds = new Set<string>()
+
+    for (const item of items) {
+      const number = extractNumber(item.url)
+      if (!number) continue
+
+      // 找到或创建对应的短链接
+      let resolvedShortLinkId = linkByNumber.get(number)
+      if (!resolvedShortLinkId) {
+        const { data: created, error: createError } = await supabase
+          .from('links')
+          .insert({
+            code: `wa-${number}`,
+            whatsapp_number: number,
+            description: `自动创建：${number}`,
+          })
+          .select('id')
+          .single()
+
+        if (createError || !created) {
+          return { error: new Error(createError?.message ?? '创建短链接失败') }
+        }
+        resolvedShortLinkId = created.id as string
+        linkByNumber.set(number, resolvedShortLinkId)
+      }
+
+      const existingItemId = existingByShortId.get(resolvedShortLinkId)
+      if (existingItemId) {
+        // 更新已有项的上限
+        const { error: updateError } = await supabase
+          .from('total_link_items')
+          .update({
+            daily_limit: item.dailyLimit,
+            total_limit: item.totalLimit,
+          })
+          .eq('id', existingItemId)
+
+        if (updateError) {
+          return { error: new Error(updateError.message) }
+        }
+        keptItemIds.add(existingItemId)
+      } else {
+        // 插入新项
+        const { data: inserted, error: insertError } = await supabase
+          .from('total_link_items')
+          .insert({
+            total_link_id: totalLinkId,
+            short_link_id: resolvedShortLinkId,
+            weight: 1,
+            daily_limit: item.dailyLimit,
+            total_limit: item.totalLimit,
+          })
+          .select('id')
+          .single()
+
+        if (insertError || !inserted) {
+          return { error: new Error(insertError?.message ?? '添加子链接失败') }
+        }
+        keptItemIds.add(inserted.id)
+      }
+    }
+
+    // 3) 删除本次未保留的旧项
+    for (const row of existing ?? []) {
+      if (!keptItemIds.has(row.id)) {
+        const { error: deleteError } = await supabase
+          .from('total_link_items')
+          .delete()
+          .eq('id', row.id)
+
+        if (deleteError) {
+          return { error: new Error(deleteError.message) }
+        }
+      }
+    }
+
+    return { error: null }
+  }
+
   // 保存：新建写入数据库，编辑更新数据库
   async function handleSave(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
 
     const trimmedName = displayName.trim()
     const trimmedCode = code.trim().toLowerCase()
-    const validSubLinks = subLinks.map((item) => item.trim()).filter(Boolean)
+    const validSubLinks = subLinks
+      .map((item) => ({
+        url: item.url.trim(),
+        dailyLimit:
+          Number.isFinite(item.dailyLimit) && item.dailyLimit > 0
+            ? Math.floor(item.dailyLimit)
+            : DEFAULT_DAILY_LIMIT,
+        totalLimit:
+          Number.isFinite(item.totalLimit) && item.totalLimit > 0
+            ? Math.floor(item.totalLimit)
+            : DEFAULT_TOTAL_LIMIT,
+      }))
+      .filter((item) => item.url)
 
     if (!trimmedName) {
       showToast('请输入总链接名称')
@@ -248,8 +406,10 @@ export default function TotalLinksPage() {
       return
     }
 
+    // 1) 保存总链接本身（名称 / 后缀 / 域名 / 切换方式）
+    let totalLinkId = editingId
+
     if (editingId) {
-      // 编辑模式：更新对应记录
       const { data, error } = await supabase
         .from('total_links')
         .update({
@@ -257,10 +417,9 @@ export default function TotalLinksPage() {
           display_name: trimmedName,
           domain,
           switch_mode: switchMode,
-          limit_type: limitType,
         })
         .eq('id', editingId)
-        .select('id, code, display_name, description, domain, switch_mode, limit_type, created_at')
+        .select('id, code, display_name, description, domain, switch_mode, created_at')
         .single()
 
       if (error) {
@@ -274,7 +433,6 @@ export default function TotalLinksPage() {
         prev.map((item) => (item.id === editingId ? data : item)),
       )
     } else {
-      // 新建模式：写入数据库
       const { data, error } = await supabase
         .from('total_links')
         .insert({
@@ -282,9 +440,8 @@ export default function TotalLinksPage() {
           display_name: trimmedName,
           domain,
           switch_mode: switchMode,
-          limit_type: limitType,
         })
-        .select('id, code, display_name, description, domain, switch_mode, limit_type, created_at')
+        .select('id, code, display_name, description, domain, switch_mode, created_at')
         .single()
 
       if (error) {
@@ -294,7 +451,23 @@ export default function TotalLinksPage() {
         return
       }
 
+      totalLinkId = data.id
       setLinks((prev) => [data, ...prev])
+    }
+
+    // 2) 同步子链接项（total_link_items）：按号码匹配已有短链接，写入每日/累计上限
+    if (totalLinkId) {
+      const { error: syncError } = await syncSubLinkItems(
+        supabase,
+        totalLinkId,
+        validSubLinks,
+      )
+      if (syncError) {
+        console.log('同步子链接失败：', syncError)
+        showToast(`子链接保存失败：${syncError.message}`)
+        setSaving(false)
+        return
+      }
     }
 
     setSaving(false)
@@ -333,6 +506,9 @@ export default function TotalLinksPage() {
                 切换方式
               </th>
               <th className="border-b border-neutral-200 px-4 py-3 font-medium text-neutral-700">
+                子链接上限
+              </th>
+              <th className="border-b border-neutral-200 px-4 py-3 font-medium text-neutral-700">
                 创建时间
               </th>
               <th className="border-b border-neutral-200 px-4 py-3 font-medium text-neutral-700">
@@ -356,6 +532,14 @@ export default function TotalLinksPage() {
                 </td>
                 <td className="border-b border-neutral-200 px-4 py-3 text-neutral-700">
                   {SWITCH_MODE_OPTIONS.find((o) => o.value === link.switch_mode)?.label || '随机切换'}
+                </td>
+                <td className="border-b border-neutral-200 px-4 py-3 text-neutral-700">
+                  <Link
+                    href={`/total-links/${link.code}`}
+                    className="text-xs text-blue-600 underline-offset-4 transition-colors hover:underline"
+                  >
+                    在详情页配置
+                  </Link>
                 </td>
                 <td className="border-b border-neutral-200 px-4 py-3 text-neutral-600">
                   {mounted ? formatDateTime(link.created_at) : '—'}
@@ -391,7 +575,7 @@ export default function TotalLinksPage() {
             {!loading && links.length === 0 && (
               <tr>
                 <td
-                  colSpan={5}
+                  colSpan={6}
                   className="border-b border-neutral-200 px-4 py-8 text-center text-sm text-neutral-500"
                 >
                   暂无总链接，点击右上角「创建总链接」开始。
@@ -402,7 +586,7 @@ export default function TotalLinksPage() {
             {loading && (
               <tr>
                 <td
-                  colSpan={5}
+                  colSpan={6}
                   className="border-b border-neutral-200 px-4 py-8 text-center text-sm text-neutral-500"
                 >
                   加载中...
@@ -502,13 +686,41 @@ export default function TotalLinksPage() {
                     <div key={index} className="flex items-center gap-2">
                       <input
                         type="text"
-                        value={item}
+                        value={item.url}
                         onChange={(event) =>
                           updateSubLink(index, event.target.value)
                         }
                         className="w-full rounded-md border border-neutral-300 px-3 py-2 text-sm text-black outline-none focus:border-blue-500"
                         placeholder="请输入 WhatsApp 链接，如 https://wa.me/8613800138000"
                       />
+                      <div className="flex shrink-0 items-center gap-1">
+                        <input
+                          type="number"
+                          min={0}
+                          value={item.dailyLimit}
+                          onChange={(event) =>
+                            updateSubLinkDailyLimit(index, Number(event.target.value))
+                          }
+                          className="w-16 rounded-md border border-neutral-300 px-2 py-2 text-center text-sm text-black outline-none focus:border-blue-500"
+                          placeholder="每日"
+                          aria-label="每日上限"
+                        />
+                        <span className="text-xs text-neutral-500">/天</span>
+                      </div>
+                      <div className="flex shrink-0 items-center gap-1">
+                        <input
+                          type="number"
+                          min={0}
+                          value={item.totalLimit}
+                          onChange={(event) =>
+                            updateSubLinkTotalLimit(index, Number(event.target.value))
+                          }
+                          className="w-16 rounded-md border border-neutral-300 px-2 py-2 text-center text-sm text-black outline-none focus:border-blue-500"
+                          placeholder="累计"
+                          aria-label="累计上限"
+                        />
+                        <span className="text-xs text-neutral-500">累计</span>
+                      </div>
                       <button
                         type="button"
                         onClick={() => removeSubLink(index)}
@@ -536,6 +748,9 @@ export default function TotalLinksPage() {
                     </div>
                   ))}
                 </div>
+                <p className="text-xs text-neutral-500">
+                  每日上限 / 累计上限填 0 表示不限；默认每日 30 次。
+                </p>
                 <button
                   type="button"
                   onClick={addSubLink}
@@ -558,29 +773,6 @@ export default function TotalLinksPage() {
                       onClick={() => setSwitchMode(option.value)}
                       className={`rounded-md border px-3 py-2 text-sm font-medium transition-colors ${
                         switchMode === option.value
-                          ? 'border-blue-500 bg-blue-50 text-blue-600'
-                          : 'border-neutral-300 text-neutral-700 hover:bg-neutral-50'
-                      }`}
-                    >
-                      {option.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {/* 上限方式 */}
-              <div className="space-y-2">
-                <label className="block text-sm font-medium text-black">
-                  上限方式
-                </label>
-                <div className="flex flex-wrap gap-2">
-                  {LIMIT_TYPE_OPTIONS.map((option) => (
-                    <button
-                      key={option.value}
-                      type="button"
-                      onClick={() => setLimitType(option.value)}
-                      className={`rounded-md border px-3 py-2 text-sm font-medium transition-colors ${
-                        limitType === option.value
                           ? 'border-blue-500 bg-blue-50 text-blue-600'
                           : 'border-neutral-300 text-neutral-700 hover:bg-neutral-50'
                       }`}

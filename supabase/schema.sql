@@ -85,7 +85,6 @@ create table if not exists public.total_links (
   description text,
   domain text, -- 短链域名，例如 5r8.cn / y41.cn
   switch_mode text not null default 'random', -- 子链接切换方式：random / sequential / round_robin
-  limit_type text not null default 'total', -- 上限方式：total（累计上限）/ daily（每日上限）
   created_at timestamptz not null default now()
 );
 
@@ -93,20 +92,30 @@ create table if not exists public.total_links (
 alter table public.total_links add column if not exists display_name text;
 alter table public.total_links add column if not exists domain text;
 alter table public.total_links add column if not exists switch_mode text not null default 'random';
-alter table public.total_links add column if not exists limit_type text not null default 'total';
+
+-- 上限逻辑已迁移到 total_link_items（每个子链接各自配置每日/累计上限），
+-- 总链接层面不再需要 limit_type / sub_links 字段。
+alter table public.total_links drop column if exists limit_type;
+alter table public.total_links drop column if exists sub_links;
 
 create index if not exists total_links_code_idx on public.total_links (code);
 
 -- -----------------------------------------------------------------------------
--- total_link_items: 总链接下的子链接（短链接）及其权重
+-- total_link_items: 总链接下的子链接（短链接）及其权重与上限
 -- -----------------------------------------------------------------------------
 create table if not exists public.total_link_items (
   id uuid primary key default gen_random_uuid(),
   total_link_id uuid not null references public.total_links (id) on delete cascade,
   short_link_id uuid not null references public.links (id) on delete cascade,
   weight integer not null default 1,
+  daily_limit integer not null default 30, -- 每日上限（0 = 不限）
+  total_limit integer not null default 0, -- 累计上限（0 = 不限）
   created_at timestamptz not null default now()
 );
+
+-- 兼容已存在的旧表：补齐上限字段
+alter table public.total_link_items add column if not exists daily_limit integer not null default 30;
+alter table public.total_link_items add column if not exists total_limit integer not null default 0;
 
 create index if not exists total_link_items_total_link_id_idx
   on public.total_link_items (total_link_id);
@@ -121,12 +130,17 @@ create table if not exists public.click_logs (
   link_id uuid references public.links (id) on delete cascade,
   short_link_id uuid references public.links (id) on delete cascade,
   country text,
+  whatsapp_number text, -- 本次跳转命中的号码（用于统计子链接上限）
   created_at timestamptz default now()
 );
+
+-- 兼容已存在的旧表：补齐号码字段
+alter table public.click_logs add column if not exists whatsapp_number text;
 
 create index if not exists click_logs_link_id_idx on public.click_logs (link_id);
 create index if not exists click_logs_short_link_id_idx on public.click_logs (short_link_id);
 create index if not exists click_logs_created_at_idx on public.click_logs (created_at);
+create index if not exists click_logs_whatsapp_number_idx on public.click_logs (whatsapp_number);
 
 -- =============================================================================
 -- Row Level Security
