@@ -4,7 +4,8 @@ import { LinksProvider } from '@/context/links-context'
 
 const navItems = [
   { label: '仪表盘', href: '/dashboard' },
-  { label: '短链接', href: '/links' },
+  { label: '总链接', href: '/total-links' },
+  { label: '子链接', href: '/links' },
   { label: '数据分析', href: '/analytics' },
   { label: '系统设置', href: '/settings' },
 ]

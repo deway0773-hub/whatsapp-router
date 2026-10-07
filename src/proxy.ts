@@ -4,7 +4,17 @@ import { NextResponse, type NextRequest } from 'next/server'
 // 恢复登录时，取消下面 updateSession 的注释即可
 // import { updateSession } from '@/lib/supabase/proxy'
 
-export async function proxy(_request: NextRequest) {
+// 公开路由白名单：无需登录即可访问（分流入口）
+const PUBLIC_PREFIXES = ['/r/', '/t/']
+
+export async function proxy(request: NextRequest) {
+  const { pathname } = request.nextUrl
+
+  // 分流入口直接放行，不做登录校验
+  if (PUBLIC_PREFIXES.some((prefix) => pathname.startsWith(prefix))) {
+    return NextResponse.next()
+  }
+
   // return updateSession(request)
   return NextResponse.next()
 }

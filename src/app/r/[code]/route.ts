@@ -1,19 +1,12 @@
 import { NextResponse, type NextRequest } from 'next/server'
+import { createClient } from '@/lib/supabase/server'
 
-// 临时模拟数据：网络恢复后替换为真实数据库查询
-// code -> 默认 WhatsApp 号码
-const mockLinks: Record<string, string> = {
-  demo1: '8613800138000',
-  demo2: '8613900139000',
-}
-
-// 临时硬编码的智能分流规则：code -> (国家/地区 -> WhatsApp 号码)
-// 网络恢复后替换为数据库中的分流规则表
-const mockRoutingRules: Record<string, Record<string, string>> = {
-  demo1: {
-    cn: '8613800138000',
-    us: '8613900139000',
-  },
+// 从请求头 / query 参数中解析访客所在国家/地区（大写，例如 CN、US）
+function resolveCountry(request: NextRequest): string {
+  const headerCountry = request.headers.get('x-vercel-ip-country')
+  const queryCountry = request.nextUrl.searchParams.get('country')
+  const raw = headerCountry ?? queryCountry ?? ''
+  return raw.trim().toUpperCase()
 }
 
 export async function GET(
@@ -21,24 +14,58 @@ export async function GET(
   { params }: { params: Promise<{ code: string }> },
 ) {
   const { code } = await params
+  const supabase = await createClient()
 
-  const defaultNumber = mockLinks[code]
+  // 1) 查询总链接（按 code）
+  const { data: link, error: linkError } = await supabase
+    .from('links')
+    .select('id, code, whatsapp_number')
+    .eq('code', code)
+    .maybeSingle()
 
-  // code 不存在 -> 跳转回首页
-  if (!defaultNumber) {
-    return NextResponse.redirect(new URL('/', request.url))
+  if (linkError) {
+    console.log('查询总链接失败：', linkError)
   }
 
-  // 获取用户所在国家/地区
-  // 1) 优先读取 Vercel 注入的请求头（线上环境）
-  // 2) 本地测试时用 query 参数模拟，例如 /r/demo1?country=us
-  const country =
-    request.headers.get('x-vercel-ip-country')?.toLowerCase() ??
-    request.nextUrl.searchParams.get('country')?.toLowerCase() ??
-    ''
+  // 总链接不存在 -> 跳转到提示页（避免死循环）
+  if (!link) {
+    return NextResponse.redirect(new URL('/not-found', request.url), 302)
+  }
 
-  // 命中分流规则则使用对应号码，否则回退到默认号码
-  const targetNumber = mockRoutingRules[code]?.[country] ?? defaultNumber
+  const country = resolveCountry(request)
+
+  // 2) 优先查询该总链接下匹配国家的分流规则
+  let targetNumber: string | null = null
+
+  if (country) {
+    const { data: rule, error: ruleError } = await supabase
+      .from('routing_rules')
+      .select('whatsapp_number')
+      .eq('link_id', link.id)
+      .eq('country', country)
+      .maybeSingle()
+
+    if (ruleError) {
+      console.log('查询分流规则失败：', ruleError)
+    }
+
+    if (rule?.whatsapp_number) {
+      targetNumber = rule.whatsapp_number
+    }
+  }
+
+  // 3) 未命中分流规则 -> 回退到总链接的默认号码（可能为空）
+  if (!targetNumber && link.whatsapp_number) {
+    targetNumber = link.whatsapp_number
+  }
+
+  // 4) 两者都没有号码 -> 跳转到提示页（避免死循环）
+  if (!targetNumber) {
+    return NextResponse.redirect(
+      new URL(`/not-found?code=${encodeURIComponent(code)}`, request.url),
+      302,
+    )
+  }
 
   // 302 临时重定向到 WhatsApp 会话
   return NextResponse.redirect(`https://wa.me/${targetNumber}`, 302)

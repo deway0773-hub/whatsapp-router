@@ -1,55 +1,215 @@
 'use client'
 
-export const dynamic = 'force-dynamic'
-
 import Link from 'next/link'
-import { useParams } from 'next/navigation'
-import { useState } from 'react'
+import { useCallback, useEffect, useState, type FormEvent } from 'react'
+import { createClient } from '@/lib/supabase/client'
 
-// 临时模拟数据：网络恢复后替换为真实数据库查询
-const mockLinks: Record<
-  string,
-  { code: string; whatsapp_number: string; description: string }
-> = {
-  demo1: {
-    code: 'demo1',
-    whatsapp_number: '8613800138000',
-    description: '测试客服',
-  },
-  demo2: {
-    code: 'demo2',
-    whatsapp_number: '8613900139000',
-    description: '美国销售团队',
-  },
+// 总链接（links 表）
+type LinkRow = {
+  id: string
+  code: string
+  whatsapp_number: string | null
+  description: string | null
+  created_at: string
 }
 
-// 可选的国家/地区
-const countryOptions = ['中国', '美国', '印度', '巴西', '其他'] as const
-
+// 子链接 / 分流规则（routing_rules 表）
 type RoutingRule = {
   id: string
+  link_id: string
   country: string
   whatsapp_number: string
+  created_at: string
 }
 
-// 临时模拟数据：已有的分流规则
-const initialRules: Record<string, RoutingRule[]> = {
-  demo1: [
-    { id: 'r1', country: '中国', whatsapp_number: '8613800138001' },
-    { id: 'r2', country: '美国', whatsapp_number: '8613800138002' },
-  ],
-  demo2: [
-    { id: 'r1', country: '巴西', whatsapp_number: '8613900139001' },
-  ],
-}
+// 可选的国家/地区（存国家代码，例如 CN、US）
+const countryOptions = [
+  { value: 'CN', label: '中国 (CN)' },
+  { value: 'US', label: '美国 (US)' },
+  { value: 'IN', label: '印度 (IN)' },
+  { value: 'BR', label: '巴西 (BR)' },
+  { value: 'GB', label: '英国 (GB)' },
+  { value: 'OTHER', label: '其他 (OTHER)' },
+] as const
 
 export default function LinkDetailPage() {
-  const params = useParams<{ id: string }>()
-  const id = typeof params?.id === 'string' ? decodeURIComponent(params.id) : ''
-  const link = mockLinks[id]
+  // 纯前端：在客户端从 URL 中安全获取 code，避免构建时静态预渲染报错
+  const [code, setCode] = useState<string | null>(null)
 
-  const [rules, setRules] = useState<RoutingRule[]>(initialRules[id] ?? [])
-  const [saved, setSaved] = useState(false)
+  const [link, setLink] = useState<LinkRow | null>(null)
+  const [rules, setRules] = useState<RoutingRule[]>([])
+  const [loading, setLoading] = useState(true)
+
+  // 添加/编辑子链接弹窗
+  const [isModalOpen, setIsModalOpen] = useState(false)
+  const [editingRuleId, setEditingRuleId] = useState<string | null>(null)
+  const [newCountry, setNewCountry] = useState<string>(countryOptions[0].value)
+  const [newNumber, setNewNumber] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [deletingId, setDeletingId] = useState<string | null>(null)
+
+  // 从 URL 中解析 code
+  useEffect(() => {
+    const segments = window.location.pathname.split('/').filter(Boolean)
+    const last = segments[segments.length - 1] ?? ''
+    setCode(decodeURIComponent(last))
+  }, [])
+
+  // 查询总链接基本信息 + 该总链接下的所有分流规则
+  const loadData = useCallback(async (linkCode: string) => {
+    setLoading(true)
+    const supabase = createClient()
+
+    // 1) 查询总链接
+    const { data: linkData, error: linkError } = await supabase
+      .from('links')
+      .select('id, code, whatsapp_number, description, created_at')
+      .eq('code', linkCode)
+      .maybeSingle()
+
+    if (linkError) {
+      console.log('查询总链接失败：', linkError)
+      setLink(null)
+      setRules([])
+      setLoading(false)
+      return
+    }
+
+    if (!linkData) {
+      setLink(null)
+      setRules([])
+      setLoading(false)
+      return
+    }
+
+    setLink(linkData)
+
+    // 2) 查询属于该总链接的所有子链接（分流规则）
+    const { data: rulesData, error: rulesError } = await supabase
+      .from('routing_rules')
+      .select('id, link_id, country, whatsapp_number, created_at')
+      .eq('link_id', linkData.id)
+      .order('created_at', { ascending: true })
+
+    if (rulesError) {
+      console.log('查询分流规则失败：', rulesError)
+      setRules([])
+    } else {
+      setRules(rulesData ?? [])
+    }
+
+    setLoading(false)
+  }, [])
+
+  useEffect(() => {
+    if (code) {
+      loadData(code)
+    }
+  }, [code, loadData])
+
+  function openModal() {
+    setEditingRuleId(null)
+    setNewCountry(countryOptions[0].value)
+    setNewNumber('')
+    setIsModalOpen(true)
+  }
+
+  function openEditModal(rule: RoutingRule) {
+    setEditingRuleId(rule.id)
+    setNewCountry(rule.country)
+    setNewNumber(rule.whatsapp_number)
+    setIsModalOpen(true)
+  }
+
+  function closeModal() {
+    setIsModalOpen(false)
+    setEditingRuleId(null)
+  }
+
+  // 保存子链接：新建写入 / 编辑更新 routing_rules 表
+  async function handleSaveRule(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!link) {
+      return
+    }
+
+    const number = newNumber.trim()
+    if (!number) {
+      return
+    }
+
+    setSaving(true)
+    const supabase = createClient()
+
+    if (editingRuleId) {
+      // 编辑模式：更新对应规则
+      const { data, error } = await supabase
+        .from('routing_rules')
+        .update({
+          country: newCountry,
+          whatsapp_number: number,
+        })
+        .eq('id', editingRuleId)
+        .select('id, link_id, country, whatsapp_number, created_at')
+        .single()
+
+      if (error) {
+        console.log('更新分流规则失败：', error)
+        setSaving(false)
+        return
+      }
+
+      setRules((prev) =>
+        prev.map((rule) => (rule.id === editingRuleId ? data : rule)),
+      )
+    } else {
+      // 新建模式：写入数据库
+      const { data, error } = await supabase
+        .from('routing_rules')
+        .insert({
+          link_id: link.id,
+          country: newCountry,
+          whatsapp_number: number,
+        })
+        .select('id, link_id, country, whatsapp_number, created_at')
+        .single()
+
+      if (error) {
+        console.log('添加分流规则失败：', error)
+        setSaving(false)
+        return
+      }
+
+      setRules((prev) => [...prev, data])
+    }
+
+    setSaving(false)
+    closeModal()
+  }
+
+  // 删除子链接：从 routing_rules 表删除
+  async function handleDeleteRule(ruleId: string) {
+    setDeletingId(ruleId)
+    const supabase = createClient()
+
+    const { error } = await supabase
+      .from('routing_rules')
+      .delete()
+      .eq('id', ruleId)
+
+    if (error) {
+      console.log('删除分流规则失败：', error)
+      setDeletingId(null)
+      return
+    }
+
+    setRules((prev) => prev.filter((rule) => rule.id !== ruleId))
+    setDeletingId(null)
+  }
+
+  if (code === null || loading) {
+    return <div className="text-sm text-neutral-500">加载中...</div>
+  }
 
   if (!link) {
     return (
@@ -57,7 +217,7 @@ export default function LinkDetailPage() {
         <div className="rounded-md border border-neutral-200 bg-white p-8 text-center">
           <h1 className="text-lg font-semibold tracking-tight">短链接不存在</h1>
           <p className="mt-1 text-sm text-neutral-600">
-            找不到名为「{id}」的短链接，它可能已被删除。
+            找不到名为「{code}」的短链接，它可能已被删除。
           </p>
           <Link
             href="/links"
@@ -70,42 +230,6 @@ export default function LinkDetailPage() {
     )
   }
 
-  function addRule() {
-    setSaved(false)
-    setRules((prev) => [
-      ...prev,
-      {
-        id: Date.now().toString(),
-        country: '中国',
-        whatsapp_number: '',
-      },
-    ])
-  }
-
-  function updateRule(
-    ruleId: string,
-    field: 'country' | 'whatsapp_number',
-    value: string,
-  ) {
-    setSaved(false)
-    setRules((prev) =>
-      prev.map((rule) =>
-        rule.id === ruleId ? { ...rule, [field]: value } : rule,
-      ),
-    )
-  }
-
-  function removeRule(ruleId: string) {
-    setSaved(false)
-    setRules((prev) => prev.filter((rule) => rule.id !== ruleId))
-  }
-
-  function handleSave() {
-    // 临时：不请求数据库，仅打印当前规则
-    console.log('分流规则：', rules)
-    setSaved(true)
-  }
-
   return (
     <div className="space-y-6">
       <div>
@@ -113,28 +237,20 @@ export default function LinkDetailPage() {
           href="/links"
           className="text-sm text-neutral-600 transition-colors hover:text-black"
         >
-          ← 返回短链接列表
+          ← 返回列表
         </Link>
       </div>
 
+      {/* 总链接信息 */}
       <div className="rounded-md border border-neutral-200 bg-white p-6">
         <h1 className="font-mono text-2xl font-semibold tracking-tight">
           {link.code}
         </h1>
-        <p className="mt-1 text-sm text-neutral-600">
-          {link.description || '暂无描述'}
-        </p>
 
         <dl className="mt-4 grid gap-4 sm:grid-cols-2">
           <div>
-            <dt className="text-xs text-neutral-500">短链接名字</dt>
+            <dt className="text-xs text-neutral-500">总链接名字</dt>
             <dd className="mt-1 font-mono text-sm text-black">{link.code}</dd>
-          </div>
-          <div>
-            <dt className="text-xs text-neutral-500">默认 WhatsApp 号码</dt>
-            <dd className="mt-1 font-mono text-sm text-black">
-              {link.whatsapp_number}
-            </dd>
           </div>
           <div className="sm:col-span-2">
             <dt className="text-xs text-neutral-500">描述</dt>
@@ -145,121 +261,148 @@ export default function LinkDetailPage() {
         </dl>
       </div>
 
+      {/* 子链接（分流规则）管理面板 */}
       <div className="rounded-md border border-neutral-200 bg-white p-6">
         <div className="flex items-center justify-between">
           <div>
-            <h2 className="text-lg font-semibold tracking-tight">智能分流规则</h2>
+            <h2 className="text-lg font-semibold tracking-tight">
+              子链接（分流规则）
+            </h2>
             <p className="mt-1 text-sm text-neutral-600">
               按访客所在国家/地区跳转到不同的 WhatsApp 号码
             </p>
           </div>
           <button
             type="button"
-            onClick={addRule}
+            onClick={openModal}
             className="rounded-md bg-black px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-neutral-800"
           >
-            添加国家/地区规则
+            添加子链接
           </button>
         </div>
 
         <div className="mt-4 space-y-3">
-          {/* 默认规则：不可删除 */}
-          <div className="flex flex-col gap-3 rounded-md border border-neutral-200 bg-neutral-50 p-4 sm:flex-row sm:items-center">
-            <div className="flex-1">
-              <span className="text-xs text-neutral-500">默认规则</span>
-              <p className="mt-1 text-sm text-black">
-                所有其他地区 → 默认号码
-              </p>
-            </div>
-            <div className="sm:w-56">
-              <input
-                type="tel"
-                value={link.whatsapp_number}
-                readOnly
-                className="w-full rounded-md border border-neutral-300 bg-neutral-100 px-3 py-2 font-mono text-sm text-neutral-500 outline-none"
-              />
-            </div>
-          </div>
-
           {rules.map((rule) => (
             <div
               key={rule.id}
               className="flex flex-col gap-3 rounded-md border border-neutral-200 p-4 sm:flex-row sm:items-center"
             >
               <div className="sm:w-40">
-                <label
-                  htmlFor={`country-${rule.id}`}
-                  className="block text-xs text-neutral-500"
-                >
+                <span className="block text-xs text-neutral-500">
                   国家/地区
-                </label>
-                <select
-                  id={`country-${rule.id}`}
-                  value={rule.country}
-                  onChange={(event) =>
-                    updateRule(rule.id, 'country', event.target.value)
-                  }
-                  className="mt-1 w-full rounded-md border border-neutral-300 px-3 py-2 text-sm text-black outline-none focus:border-black"
-                >
-                  {countryOptions.map((country) => (
-                    <option key={country} value={country}>
-                      {country}
-                    </option>
-                  ))}
-                </select>
+                </span>
+                <p className="mt-1 font-mono text-sm text-black">
+                  {rule.country}
+                </p>
               </div>
 
               <div className="flex-1">
-                <label
-                  htmlFor={`number-${rule.id}`}
-                  className="block text-xs text-neutral-500"
-                >
+                <span className="block text-xs text-neutral-500">
                   跳转的 WhatsApp 号码
-                </label>
-                <input
-                  id={`number-${rule.id}`}
-                  type="tel"
-                  value={rule.whatsapp_number}
-                  onChange={(event) =>
-                    updateRule(rule.id, 'whatsapp_number', event.target.value)
-                  }
-                  placeholder="8613800138000"
-                  className="mt-1 w-full rounded-md border border-neutral-300 px-3 py-2 font-mono text-sm text-black outline-none focus:border-black"
-                />
+                </span>
+                <p className="mt-1 font-mono text-sm text-black">
+                  {rule.whatsapp_number}
+                </p>
               </div>
 
               <button
                 type="button"
-                onClick={() => removeRule(rule.id)}
-                className="self-end rounded-md px-2 py-1 text-xs font-medium text-red-600 transition-colors hover:bg-red-50 sm:self-center"
+                onClick={() => openEditModal(rule)}
+                className="self-end rounded-md px-2 py-1 text-xs font-medium text-blue-600 transition-colors hover:bg-blue-50 sm:self-center"
               >
-                删除
+                编辑
+              </button>
+
+              <button
+                type="button"
+                onClick={() => handleDeleteRule(rule.id)}
+                disabled={deletingId === rule.id}
+                className="self-end rounded-md px-2 py-1 text-xs font-medium text-red-600 transition-colors hover:bg-red-50 disabled:opacity-50 sm:self-center"
+              >
+                {deletingId === rule.id ? '删除中...' : '删除'}
               </button>
             </div>
           ))}
 
           {rules.length === 0 && (
             <p className="rounded-md border border-dashed border-neutral-300 p-4 text-center text-sm text-neutral-500">
-              暂无自定义规则，点击右上角「添加国家/地区规则」开始配置。
+              暂无子链接，点击右上角「添加子链接」开始配置。
             </p>
           )}
         </div>
-
-        <div className="mt-6 flex items-center justify-end gap-3">
-          {saved && (
-            <span className="rounded-md bg-green-50 px-3 py-1.5 text-sm font-medium text-green-700">
-              保存成功
-            </span>
-          )}
-          <button
-            type="button"
-            onClick={handleSave}
-            className="rounded-md bg-black px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-neutral-800"
-          >
-            保存分流规则
-          </button>
-        </div>
       </div>
+
+      {/* 添加/编辑子链接弹窗 */}
+      {isModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+          <div className="w-full max-w-md rounded-md bg-white p-6 shadow-lg">
+            <h3 className="text-lg font-semibold tracking-tight">
+              {editingRuleId ? '编辑子链接' : '添加子链接'}
+            </h3>
+            <p className="mt-1 text-sm text-neutral-600">
+              选择国家/地区并填写对应的 WhatsApp 号码
+            </p>
+
+            <form onSubmit={handleSaveRule} className="mt-4 space-y-4">
+              <div className="space-y-1">
+                <label
+                  htmlFor="new-country"
+                  className="block text-sm font-medium text-black"
+                >
+                  国家/地区
+                </label>
+                <select
+                  id="new-country"
+                  value={newCountry}
+                  onChange={(event) => setNewCountry(event.target.value)}
+                  className="w-full rounded-md border border-neutral-300 px-3 py-2 text-sm text-black outline-none focus:border-black"
+                >
+                  {countryOptions.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="space-y-1">
+                <label
+                  htmlFor="new-number"
+                  className="block text-sm font-medium text-black"
+                >
+                  跳转的 WhatsApp 号码
+                </label>
+                <input
+                  id="new-number"
+                  type="tel"
+                  required
+                  value={newNumber}
+                  onChange={(event) => setNewNumber(event.target.value)}
+                  placeholder="8613800138000"
+                  className="w-full rounded-md border border-neutral-300 px-3 py-2 font-mono text-sm text-black outline-none focus:border-black"
+                />
+              </div>
+
+              <div className="flex justify-end gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={closeModal}
+                  className="rounded-md border border-neutral-300 px-4 py-2 text-sm font-medium text-black transition-colors hover:bg-neutral-50"
+                >
+                  取消
+                </button>
+                <button
+                  type="submit"
+                  disabled={saving}
+                  className="rounded-md bg-black px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-neutral-800 disabled:opacity-50"
+                >
+                  {saving ? '保存中...' : '保存'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

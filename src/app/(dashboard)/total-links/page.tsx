@@ -4,7 +4,7 @@ import Link from 'next/link'
 import { useCallback, useEffect, useState, type FormEvent } from 'react'
 import { createClient } from '@/lib/supabase/client'
 
-type LinkItem = {
+type TotalLinkItem = {
   id: string
   code: string
   description: string | null
@@ -20,8 +20,8 @@ function formatDateTime(value: string) {
   return date.toISOString().slice(0, 19).replace('T', ' ')
 }
 
-export default function LinksPage() {
-  const [links, setLinks] = useState<LinkItem[]>([])
+export default function TotalLinksPage() {
+  const [links, setLinks] = useState<TotalLinkItem[]>([])
   const [loading, setLoading] = useState(true)
   const [copiedCode, setCopiedCode] = useState<string | null>(null)
 
@@ -35,7 +35,7 @@ export default function LinksPage() {
   const [saving, setSaving] = useState(false)
 
   // 删除确认弹窗：保存待删除的记录，null 表示未打开
-  const [deletingLink, setDeletingLink] = useState<LinkItem | null>(null)
+  const [deletingLink, setDeletingLink] = useState<TotalLinkItem | null>(null)
   const [deleting, setDeleting] = useState(false)
 
   // 查询所有总链接
@@ -43,19 +43,31 @@ export default function LinksPage() {
     setLoading(true)
     const supabase = createClient()
 
-    const { data, error } = await supabase
-      .from('links')
-      .select('id, code, description, created_at')
-      .order('created_at', { ascending: false })
+    try {
+      // 加超时保护：若 RLS 未放开导致请求挂起，避免页面一直卡在“加载中...”
+      const query = supabase
+        .from('total_links')
+        .select('id, code, description, created_at')
+        .order('created_at', { ascending: false })
 
-    if (error) {
-      console.log('查询短链接列表失败：', error)
+      const timeout = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('查询总链接超时（请检查 total_links 表的 RLS 策略）')), 8000),
+      )
+
+      const { data, error } = await Promise.race([query, timeout])
+
+      if (error) {
+        console.log('查询总链接列表失败：', error)
+        setLinks([])
+      } else {
+        setLinks(data ?? [])
+      }
+    } catch (err) {
+      console.log('查询总链接列表异常：', err)
       setLinks([])
-    } else {
-      setLinks(data ?? [])
+    } finally {
+      setLoading(false)
     }
-
-    setLoading(false)
   }, [])
 
   useEffect(() => {
@@ -64,7 +76,7 @@ export default function LinksPage() {
   }, [loadLinks])
 
   async function handleCopy(linkCode: string) {
-    const shortUrl = window.location.origin + '/r/' + linkCode
+    const shortUrl = window.location.origin + '/t/' + linkCode
     try {
       await navigator.clipboard.writeText(shortUrl)
       setCopiedCode(linkCode)
@@ -81,7 +93,7 @@ export default function LinksPage() {
     setIsModalOpen(true)
   }
 
-  function openEditModal(link: LinkItem) {
+  function openEditModal(link: TotalLinkItem) {
     setEditingId(link.id)
     setDescription(link.description ?? '')
     setCode(link.code)
@@ -93,8 +105,8 @@ export default function LinksPage() {
     setEditingId(null)
   }
 
-  // 点击“删除”时打开自定义确认弹窗（不再使用 window.confirm）
-  function openDeleteModal(link: LinkItem) {
+  // 点击“删除”时打开自定义确认弹窗
+  function openDeleteModal(link: TotalLinkItem) {
     setDeletingLink(link)
   }
 
@@ -112,12 +124,12 @@ export default function LinksPage() {
     const supabase = createClient()
 
     const { error } = await supabase
-      .from('links')
+      .from('total_links')
       .delete()
       .eq('id', deletingLink.id)
 
     if (error) {
-      console.log('删除短链接失败：', error)
+      console.log('删除总链接失败：', error)
       setDeleting(false)
       return
     }
@@ -144,7 +156,7 @@ export default function LinksPage() {
     if (editingId) {
       // 编辑模式：更新对应记录
       const { data, error } = await supabase
-        .from('links')
+        .from('total_links')
         .update({
           code: trimmedCode,
           description: trimmedDescription || null,
@@ -154,7 +166,7 @@ export default function LinksPage() {
         .single()
 
       if (error) {
-        console.log('更新短链接失败：', error)
+        console.log('更新总链接失败：', error)
         setSaving(false)
         return
       }
@@ -165,7 +177,7 @@ export default function LinksPage() {
     } else {
       // 新建模式：写入数据库
       const { data, error } = await supabase
-        .from('links')
+        .from('total_links')
         .insert({
           code: trimmedCode,
           description: trimmedDescription || null,
@@ -174,7 +186,7 @@ export default function LinksPage() {
         .single()
 
       if (error) {
-        console.log('创建短链接失败：', error)
+        console.log('创建总链接失败：', error)
         setSaving(false)
         return
       }
@@ -190,15 +202,17 @@ export default function LinksPage() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight">短链接</h1>
-          <p className="text-sm text-neutral-600">管理你的短链接</p>
+          <h1 className="text-2xl font-semibold tracking-tight">总链接</h1>
+          <p className="text-sm text-neutral-600">
+            管理你的总链接，详情页可配置子链接与权重
+          </p>
         </div>
         <button
           type="button"
           onClick={openModal}
           className="rounded-md bg-black px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-neutral-800"
         >
-          创建短链接
+          创建总链接
         </button>
       </div>
 
@@ -207,7 +221,7 @@ export default function LinksPage() {
           <thead className="bg-neutral-50">
             <tr>
               <th className="border-b border-neutral-200 px-4 py-3 font-medium text-neutral-700">
-                短链接名字
+                总链接名字
               </th>
               <th className="border-b border-neutral-200 px-4 py-3 font-medium text-neutral-700">
                 描述
@@ -225,7 +239,7 @@ export default function LinksPage() {
               <tr key={link.id} className="hover:bg-neutral-50">
                 <td className="border-b border-neutral-200 px-4 py-3 font-mono text-black">
                   <Link
-                    href={`/links/${link.code}`}
+                    href={`/total-links/${link.code}`}
                     className="text-black underline-offset-4 transition-colors hover:text-blue-600 hover:underline"
                   >
                     {link.code}
@@ -271,7 +285,7 @@ export default function LinksPage() {
                   colSpan={4}
                   className="border-b border-neutral-200 px-4 py-8 text-center text-sm text-neutral-500"
                 >
-                  暂无短链接，点击右上角「创建短链接」开始。
+                  暂无总链接，点击右上角「创建总链接」开始。
                 </td>
               </tr>
             )}
@@ -300,12 +314,10 @@ export default function LinksPage() {
             onClick={(event) => event.stopPropagation()}
           >
             <h2 className="text-lg font-semibold tracking-tight">
-              {editingId ? '编辑短链接' : '创建短链接'}
+              {editingId ? '编辑总链接' : '创建总链接'}
             </h2>
             <p className="mt-1 text-sm text-neutral-600">
-              {editingId
-                ? '修改短链接名字与描述'
-                : '填写短链接名字，可选描述'}
+              {editingId ? '修改总链接名字与描述' : '填写总链接名字，可选描述'}
             </p>
 
             <form onSubmit={handleSave} className="mt-4 space-y-4">
@@ -314,7 +326,7 @@ export default function LinksPage() {
                   htmlFor="code"
                   className="block text-sm font-medium text-black"
                 >
-                  短链接名字
+                  总链接名字
                 </label>
                 <input
                   id="code"
@@ -323,10 +335,10 @@ export default function LinksPage() {
                   value={code}
                   onChange={(event) => setCode(event.target.value)}
                   className="w-full rounded-md border border-neutral-300 px-3 py-2 text-sm text-black outline-none focus:border-black"
-                  placeholder="demo1"
+                  placeholder="total1"
                 />
                 <p className="text-xs text-neutral-500">
-                  建议使用英文或数字，将作为短链接路径
+                  建议使用英文或数字，将作为总链接路径
                 </p>
               </div>
 
@@ -384,15 +396,15 @@ export default function LinksPage() {
 
             <div className="mt-4 space-y-2 rounded-md border border-neutral-200 bg-neutral-50 p-4">
               <div className="flex items-center justify-between gap-4">
-                <span className="text-xs text-neutral-500">短链接名字</span>
+                <span className="text-xs text-neutral-500">总链接名字</span>
                 <span className="font-mono text-sm text-black">
                   {deletingLink.code}
                 </span>
               </div>
               <div className="flex items-center justify-between gap-4">
-                <span className="text-xs text-neutral-500">WhatsApp 号码</span>
-                <span className="font-mono text-sm text-black">
-                  {deletingLink.whatsapp_number || '—'}
+                <span className="text-xs text-neutral-500">描述</span>
+                <span className="text-sm text-black">
+                  {deletingLink.description || '—'}
                 </span>
               </div>
             </div>
