@@ -429,22 +429,17 @@ export default function LinksPage() {
                 >
                   每日上限
                 </label>
-                <div className="flex items-center gap-2">
-                  <input
-                    id="dailyLimit"
-                    type="number"
-                    min={0}
-                    value={dailyLimit}
-                    onChange={(event) =>
-                      setDailyLimit(Number(event.target.value))
-                    }
-                    className="w-full rounded-md border border-neutral-300 px-3 py-2 text-sm text-black outline-none focus:border-black"
-                    placeholder="30"
-                  />
-                  <span className="shrink-0 text-xs text-neutral-500">
-                    次/天
-                  </span>
-                </div>
+                <input
+                  id="dailyLimit"
+                  type="number"
+                  min={0}
+                  value={dailyLimit}
+                  onChange={(event) =>
+                    setDailyLimit(Number(event.target.value))
+                  }
+                  className="w-full rounded-md border border-neutral-300 px-3 py-2 text-sm text-black outline-none focus:border-black"
+                  placeholder="默认30，填0表示不限"
+                />
               </div>
 
               <div className="space-y-1">
