@@ -82,8 +82,16 @@ create table if not exists public.total_links (
   id uuid primary key default gen_random_uuid(),
   code text not null unique,
   description text,
+  domain text, -- 短链域名，例如 5r8.cn / y41.cn
+  switch_mode text not null default 'random', -- 子链接切换方式：random / sequential / round_robin
+  limit_type text not null default 'total', -- 上限方式：total（累计上限）/ daily（每日上限）
   created_at timestamptz not null default now()
 );
+
+-- 兼容已存在的旧表：补齐新字段
+alter table public.total_links add column if not exists domain text;
+alter table public.total_links add column if not exists switch_mode text not null default 'random';
+alter table public.total_links add column if not exists limit_type text not null default 'total';
 
 create index if not exists total_links_code_idx on public.total_links (code);
 
