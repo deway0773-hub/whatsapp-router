@@ -16,7 +16,6 @@ type LinkItem = {
 }
 
 const DEFAULT_DAILY_LIMIT = 30
-const DEFAULT_TOTAL_LIMIT = 0
 
 // 从 WhatsApp 链接中提取纯号码
 function extractNumber(url: string): string {
@@ -49,7 +48,6 @@ export default function LinksPage() {
   const [name, setName] = useState('')
   const [originalUrl, setOriginalUrl] = useState('')
   const [dailyLimit, setDailyLimit] = useState(DEFAULT_DAILY_LIMIT)
-  const [totalLimit, setTotalLimit] = useState(DEFAULT_TOTAL_LIMIT)
   const [description, setDescription] = useState('')
   const [saving, setSaving] = useState(false)
   const [toast, setToast] = useState<string | null>(null)
@@ -105,7 +103,6 @@ export default function LinksPage() {
     setName('')
     setOriginalUrl('')
     setDailyLimit(DEFAULT_DAILY_LIMIT)
-    setTotalLimit(DEFAULT_TOTAL_LIMIT)
     setDescription('')
     setIsModalOpen(true)
   }
@@ -116,9 +113,6 @@ export default function LinksPage() {
     setOriginalUrl(link.original_url ?? '')
     setDailyLimit(
       typeof link.daily_limit === 'number' ? link.daily_limit : DEFAULT_DAILY_LIMIT,
-    )
-    setTotalLimit(
-      typeof link.total_limit === 'number' ? link.total_limit : DEFAULT_TOTAL_LIMIT,
     )
     setDescription(link.description ?? '')
     setIsModalOpen(true)
@@ -175,10 +169,6 @@ export default function LinksPage() {
       Number.isFinite(dailyLimit) && dailyLimit > 0
         ? Math.floor(dailyLimit)
         : DEFAULT_DAILY_LIMIT
-    const finalTotalLimit =
-      Number.isFinite(totalLimit) && totalLimit > 0
-        ? Math.floor(totalLimit)
-        : DEFAULT_TOTAL_LIMIT
 
     if (!trimmedName) {
       showToast('请输入备注名')
@@ -205,7 +195,6 @@ export default function LinksPage() {
       original_url: trimmedUrl,
       whatsapp_number: number,
       daily_limit: finalDailyLimit,
-      total_limit: finalTotalLimit,
     }
 
     const selectColumns =
@@ -284,9 +273,6 @@ export default function LinksPage() {
                 每日上限
               </th>
               <th className="border-b border-neutral-200 px-4 py-3 font-medium text-neutral-700">
-                累计上限
-              </th>
-              <th className="border-b border-neutral-200 px-4 py-3 font-medium text-neutral-700">
                 状态
               </th>
               <th className="border-b border-neutral-200 px-4 py-3 font-medium text-neutral-700">
@@ -297,7 +283,6 @@ export default function LinksPage() {
           <tbody>
             {links.map((link) => {
               const daily = link.daily_limit ?? DEFAULT_DAILY_LIMIT
-              const total = link.total_limit ?? DEFAULT_TOTAL_LIMIT
               const fullUrl =
                 link.original_url ||
                 (link.whatsapp_number
@@ -322,9 +307,6 @@ export default function LinksPage() {
                   </td>
                   <td className="border-b border-neutral-200 px-4 py-3 text-neutral-700">
                     {daily > 0 ? `${daily} 次/天` : '不限'}
-                  </td>
-                  <td className="border-b border-neutral-200 px-4 py-3 text-neutral-700">
-                    {total > 0 ? `${total} 次` : '不限'}
                   </td>
                   <td className="border-b border-neutral-200 px-4 py-3">
                     <span className="inline-flex items-center rounded-full bg-green-50 px-2 py-0.5 text-xs font-medium text-green-700">
@@ -363,7 +345,7 @@ export default function LinksPage() {
             {!loading && links.length === 0 && (
               <tr>
                 <td
-                  colSpan={6}
+                  colSpan={5}
                   className="border-b border-neutral-200 px-4 py-8 text-center text-sm text-neutral-500"
                 >
                   暂无子链接，点击右上角「创建子链接」开始。
@@ -374,7 +356,7 @@ export default function LinksPage() {
             {loading && (
               <tr>
                 <td
-                  colSpan={6}
+                  colSpan={5}
                   className="border-b border-neutral-200 px-4 py-8 text-center text-sm text-neutral-500"
                 >
                   加载中...
@@ -440,53 +422,28 @@ export default function LinksPage() {
                 />
               </div>
 
-              <div className="grid grid-cols-2 gap-3">
-                <div className="space-y-1">
-                  <label
-                    htmlFor="dailyLimit"
-                    className="block text-sm font-medium text-black"
-                  >
-                    每日上限
-                  </label>
-                  <div className="flex items-center gap-2">
-                    <input
-                      id="dailyLimit"
-                      type="number"
-                      min={0}
-                      value={dailyLimit}
-                      onChange={(event) =>
-                        setDailyLimit(Number(event.target.value))
-                      }
-                      className="w-full rounded-md border border-neutral-300 px-3 py-2 text-sm text-black outline-none focus:border-black"
-                      placeholder="30"
-                    />
-                    <span className="shrink-0 text-xs text-neutral-500">
-                      次/天
-                    </span>
-                  </div>
-                </div>
-
-                <div className="space-y-1">
-                  <label
-                    htmlFor="totalLimit"
-                    className="block text-sm font-medium text-black"
-                  >
-                    累计上限
-                  </label>
-                  <div className="flex items-center gap-2">
-                    <input
-                      id="totalLimit"
-                      type="number"
-                      min={0}
-                      value={totalLimit}
-                      onChange={(event) =>
-                        setTotalLimit(Number(event.target.value))
-                      }
-                      className="w-full rounded-md border border-neutral-300 px-3 py-2 text-sm text-black outline-none focus:border-black"
-                      placeholder="0"
-                    />
-                    <span className="shrink-0 text-xs text-neutral-500">次</span>
-                  </div>
+              <div className="space-y-1">
+                <label
+                  htmlFor="dailyLimit"
+                  className="block text-sm font-medium text-black"
+                >
+                  每日上限
+                </label>
+                <div className="flex items-center gap-2">
+                  <input
+                    id="dailyLimit"
+                    type="number"
+                    min={0}
+                    value={dailyLimit}
+                    onChange={(event) =>
+                      setDailyLimit(Number(event.target.value))
+                    }
+                    className="w-full rounded-md border border-neutral-300 px-3 py-2 text-sm text-black outline-none focus:border-black"
+                    placeholder="30"
+                  />
+                  <span className="shrink-0 text-xs text-neutral-500">
+                    次/天
+                  </span>
                 </div>
               </div>
 
@@ -506,7 +463,7 @@ export default function LinksPage() {
                   placeholder="美国销售团队"
                 />
                 <p className="text-xs text-neutral-500">
-                  每日上限 / 累计上限 填 0 表示不限；默认为每日 30 次。
+                  每日上限填 0 表示不限，默认为每日 30 次。
                 </p>
               </div>
 
