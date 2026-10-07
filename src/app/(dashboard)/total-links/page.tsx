@@ -51,7 +51,7 @@ export default function TotalLinksPage() {
         .order('created_at', { ascending: false })
 
       const timeout = new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('查询总链接超时（请检查 total_links 表的 RLS 策略）')), 8000),
+        setTimeout(() => reject(new Error('查询总链接超时（请检查 total_links 表的 RLS 策略）')), 5000),
       )
 
       const { data, error } = await Promise.race([query, timeout])

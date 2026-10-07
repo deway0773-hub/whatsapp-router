@@ -8,6 +8,7 @@ type LinkItem = {
   id: string
   code: string
   description: string | null
+  whatsapp_number?: string
   created_at: string
 }
 
